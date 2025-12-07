@@ -1,34 +1,72 @@
-import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useState, useEffect } from "react";
+import { useNavigate, Link } from "react-router-dom";
 import { Eye, EyeOff, LogIn, AlertCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useAuth } from "@/contexts/AuthContext";
+import { z } from "zod";
+
+const loginSchema = z.object({
+  email: z.string().email("Email inválido"),
+  password: z.string().min(1, "Contraseña requerida"),
+});
 
 export default function Login() {
   const navigate = useNavigate();
+  const { signIn, user, loading } = useAuth();
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
   const [formData, setFormData] = useState({
-    identification: "",
+    email: "",
     password: "",
     remember: false,
   });
 
+  // Redirect if already logged in
+  useEffect(() => {
+    if (!loading && user) {
+      navigate("/dashboard");
+    }
+  }, [user, loading, navigate]);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
+
+    try {
+      loginSchema.parse({ email: formData.email, password: formData.password });
+    } catch (err) {
+      if (err instanceof z.ZodError) {
+        setError(err.errors[0]?.message || "Datos inválidos");
+        return;
+      }
+    }
+
     setIsLoading(true);
 
-    // Simulate login
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    const { error: signInError } = await signIn(formData.email, formData.password);
 
-    if (formData.identification && formData.password) {
-      navigate("/dashboard");
+    if (signInError) {
+      if (signInError.message.includes("Invalid login credentials")) {
+        setError("Credenciales inválidas. Verifique su email y contraseña.");
+      } else if (signInError.message.includes("Email not confirmed")) {
+        setError("Por favor confirme su email antes de iniciar sesión.");
+      } else {
+        setError(signInError.message);
+      }
+      setIsLoading(false);
     } else {
-      setError("Por favor ingrese sus credenciales");
+      navigate("/dashboard");
     }
-    setIsLoading(false);
   };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <div className="w-12 h-12 border-4 border-primary/30 border-t-primary rounded-full animate-spin"></div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen flex">
@@ -36,7 +74,6 @@ export default function Login() {
       <div className="hidden lg:flex lg:w-1/2 bg-primary relative overflow-hidden">
         <div className="absolute inset-0 bg-gradient-to-br from-primary via-sena-green-dark to-primary opacity-90"></div>
         
-        {/* Pattern overlay */}
         <div 
           className="absolute inset-0 opacity-10"
           style={{
@@ -103,15 +140,15 @@ export default function Login() {
           <form onSubmit={handleSubmit} className="space-y-5">
             <div>
               <label className="block text-sm font-medium text-foreground mb-1.5">
-                Número de Identificación
+                Correo Electrónico
               </label>
               <input
-                type="text"
-                value={formData.identification}
+                type="email"
+                value={formData.email}
                 onChange={(e) =>
-                  setFormData({ ...formData, identification: e.target.value })
+                  setFormData({ ...formData, email: e.target.value })
                 }
-                placeholder="Ingrese su número de identificación"
+                placeholder="correo@ejemplo.com"
                 className="input-sena"
                 required
               />
@@ -187,9 +224,9 @@ export default function Login() {
 
           <p className="text-center text-sm text-muted-foreground mt-6">
             ¿No tiene cuenta?{" "}
-            <a href="/register" className="text-primary hover:underline font-medium">
-              Solicitar acceso
-            </a>
+            <Link to="/register" className="text-primary hover:underline font-medium">
+              Registrarse
+            </Link>
           </p>
 
           <div className="mt-8 pt-8 border-t border-border">

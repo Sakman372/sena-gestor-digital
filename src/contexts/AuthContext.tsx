@@ -141,7 +141,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const redirectUrl = `${window.location.origin}/dashboard`;
 
-      const { error } = await supabase.auth.signUp({
+      const { data: signUpData, error } = await supabase.auth.signUp({
         email: data.email,
         password: data.password,
         options: {
@@ -157,7 +157,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       });
 
       if (error) {
+        // Check for duplicate email
+        if (error.message.includes('already registered') || error.message.includes('User already registered')) {
+          return { 
+            error: new Error('Este correo electrónico ya está registrado. Por favor inicia sesión o usa otro correo.') 
+          };
+        }
         return { error };
+      }
+
+      // Check if user already exists (Supabase returns user but no session for existing users)
+      if (signUpData.user && !signUpData.session) {
+        // This could mean the user exists but needs email confirmation
+        // or the user already exists
+        const identities = signUpData.user.identities;
+        if (identities && identities.length === 0) {
+          return { 
+            error: new Error('Este correo electrónico ya está registrado. Por favor inicia sesión.') 
+          };
+        }
       }
 
       toast({

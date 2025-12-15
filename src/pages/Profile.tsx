@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import {
   User,
@@ -12,13 +12,51 @@ import {
   Camera,
   Eye,
   EyeOff,
+  Loader2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useAuth } from "@/contexts/AuthContext";
+import { supabase } from "@/integrations/supabase/client";
+import { toast } from "@/hooks/use-toast";
+
+const MAX_AVATAR_SIZE = 10 * 1024 * 1024; // 10MB
 
 export default function Profile() {
+  const { user, profile, role, refreshProfile } = useAuth();
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  
   const [activeTab, setActiveTab] = useState<"info" | "security" | "notifications">("info");
   const [showCurrentPassword, setShowCurrentPassword] = useState(false);
   const [showNewPassword, setShowNewPassword] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [uploadingAvatar, setUploadingAvatar] = useState(false);
+  
+  // Form state
+  const [formData, setFormData] = useState({
+    nombres: "",
+    apellidos: "",
+    email: "",
+    telefono: "",
+  });
+  
+  // Password form
+  const [passwordForm, setPasswordForm] = useState({
+    currentPassword: "",
+    newPassword: "",
+    confirmPassword: "",
+  });
+  const [changingPassword, setChangingPassword] = useState(false);
+
+  useEffect(() => {
+    if (profile) {
+      setFormData({
+        nombres: profile.nombres || "",
+        apellidos: profile.apellidos || "",
+        email: profile.email || "",
+        telefono: profile.telefono || "",
+      });
+    }
+  }, [profile]);
 
   const tabs = [
     { id: "info" as const, label: "Información Personal", icon: User },
@@ -26,15 +64,207 @@ export default function Profile() {
     { id: "notifications" as const, label: "Notificaciones", icon: Bell },
   ];
 
-  const userData = {
-    name: "Juan Pablo González",
-    identification: "1234567890",
-    email: "juan.gonzalez@sena.edu.co",
-    phone: "+57 300 123 4567",
-    address: "Bogotá, Colombia",
-    role: "Funcionario Administrativo",
-    joinDate: "15/03/2020",
+  const handleAvatarChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !user) return;
+
+    if (file.size > MAX_AVATAR_SIZE) {
+      toast({
+        title: "Archivo muy grande",
+        description: "La imagen no puede superar los 10MB",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (!file.type.startsWith('image/')) {
+      toast({
+        title: "Formato inválido",
+        description: "Solo se permiten archivos de imagen",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    try {
+      setUploadingAvatar(true);
+
+      // Delete old avatar if exists
+      if (profile?.avatar_url) {
+        await supabase.storage.from('avatars').remove([profile.avatar_url]);
+      }
+
+      // Upload new avatar
+      const fileExt = file.name.split('.').pop();
+      const fileName = `${user.id}/${Date.now()}.${fileExt}`;
+      
+      const { error: uploadError } = await supabase.storage
+        .from('avatars')
+        .upload(fileName, file);
+
+      if (uploadError) {
+        toast({
+          title: "Error al subir imagen",
+          description: uploadError.message,
+          variant: "destructive",
+        });
+        return;
+      }
+
+      // Update profile with new avatar URL
+      const { error: updateError } = await supabase
+        .from('profiles')
+        .update({ avatar_url: fileName })
+        .eq('user_id', user.id);
+
+      if (updateError) {
+        toast({
+          title: "Error",
+          description: updateError.message,
+          variant: "destructive",
+        });
+        return;
+      }
+
+      toast({
+        title: "Foto actualizada",
+        description: "Tu foto de perfil ha sido actualizada",
+      });
+
+      refreshProfile();
+    } catch (error: any) {
+      toast({
+        title: "Error",
+        description: error.message || "Ocurrió un error al subir la imagen",
+        variant: "destructive",
+      });
+    } finally {
+      setUploadingAvatar(false);
+    }
   };
+
+  const handleSaveProfile = async () => {
+    if (!user) return;
+
+    if (!formData.nombres.trim() || !formData.apellidos.trim()) {
+      toast({
+        title: "Error",
+        description: "Nombres y apellidos son requeridos",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    try {
+      setSaving(true);
+
+      const { error } = await supabase
+        .from('profiles')
+        .update({
+          nombres: formData.nombres.trim(),
+          apellidos: formData.apellidos.trim(),
+          telefono: formData.telefono.trim() || null,
+        })
+        .eq('user_id', user.id);
+
+      if (error) {
+        toast({
+          title: "Error",
+          description: error.message,
+          variant: "destructive",
+        });
+        return;
+      }
+
+      toast({
+        title: "Perfil actualizado",
+        description: "Tus datos han sido guardados exitosamente",
+      });
+
+      refreshProfile();
+    } catch (error: any) {
+      toast({
+        title: "Error",
+        description: error.message || "Ocurrió un error al guardar",
+        variant: "destructive",
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleChangePassword = async () => {
+    if (!passwordForm.newPassword || !passwordForm.confirmPassword) {
+      toast({
+        title: "Error",
+        description: "Por favor completa todos los campos",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (passwordForm.newPassword.length < 6) {
+      toast({
+        title: "Error",
+        description: "La contraseña debe tener al menos 6 caracteres",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (passwordForm.newPassword !== passwordForm.confirmPassword) {
+      toast({
+        title: "Error",
+        description: "Las contraseñas no coinciden",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    try {
+      setChangingPassword(true);
+
+      const { error } = await supabase.auth.updateUser({
+        password: passwordForm.newPassword,
+      });
+
+      if (error) {
+        toast({
+          title: "Error",
+          description: error.message,
+          variant: "destructive",
+        });
+        return;
+      }
+
+      toast({
+        title: "Contraseña actualizada",
+        description: "Tu contraseña ha sido cambiada exitosamente",
+      });
+
+      setPasswordForm({
+        currentPassword: "",
+        newPassword: "",
+        confirmPassword: "",
+      });
+    } catch (error: any) {
+      toast({
+        title: "Error",
+        description: error.message || "Ocurrió un error al cambiar la contraseña",
+        variant: "destructive",
+      });
+    } finally {
+      setChangingPassword(false);
+    }
+  };
+
+  const getAvatarUrl = () => {
+    if (!profile?.avatar_url) return null;
+    const { data } = supabase.storage.from('avatars').getPublicUrl(profile.avatar_url);
+    return data.publicUrl;
+  };
+
+  const avatarUrl = getAvatarUrl();
 
   return (
     <DashboardLayout>
@@ -62,20 +292,58 @@ export default function Profile() {
           <div className="px-6 pb-6">
             <div className="flex flex-col sm:flex-row sm:items-end gap-4 -mt-12 relative z-10">
               <div className="relative">
-                <div className="w-24 h-24 bg-card border-4 border-card rounded-full flex items-center justify-center shadow-elevated">
-                  <User className="w-12 h-12 text-primary" />
+                <div className="w-24 h-24 bg-card border-4 border-card rounded-full flex items-center justify-center shadow-elevated overflow-hidden">
+                  {avatarUrl ? (
+                    <img 
+                      src={avatarUrl} 
+                      alt="Avatar" 
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <User className="w-12 h-12 text-primary" />
+                  )}
                 </div>
-                <button className="absolute bottom-0 right-0 w-8 h-8 bg-primary text-primary-foreground rounded-full flex items-center justify-center shadow-card hover:bg-sena-green-dark transition-colors">
-                  <Camera className="w-4 h-4" />
+                <button 
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={uploadingAvatar}
+                  className="absolute bottom-0 right-0 w-8 h-8 bg-primary text-primary-foreground rounded-full flex items-center justify-center shadow-card hover:bg-sena-green-dark transition-colors disabled:opacity-50"
+                >
+                  {uploadingAvatar ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Camera className="w-4 h-4" />
+                  )}
                 </button>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  className="hidden"
+                  accept="image/*"
+                  onChange={handleAvatarChange}
+                />
               </div>
               <div className="flex-1 pt-4 sm:pt-0">
-                <h2 className="text-xl font-bold text-foreground">{userData.name}</h2>
-                <p className="text-muted-foreground">{userData.role}</p>
+                <h2 className="text-xl font-bold text-foreground">
+                  {profile ? `${profile.nombres} ${profile.apellidos}` : 'Usuario'}
+                </h2>
+                <p className="text-muted-foreground capitalize">{role || 'Usuario'}</p>
               </div>
-              <button className="btn-sena flex items-center gap-2 self-start sm:self-auto">
-                <Save className="w-4 h-4" />
-                Guardar Cambios
+              <button 
+                onClick={handleSaveProfile}
+                disabled={saving}
+                className="btn-sena flex items-center gap-2 self-start sm:self-auto"
+              >
+                {saving ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Guardando...
+                  </>
+                ) : (
+                  <>
+                    <Save className="w-4 h-4" />
+                    Guardar Cambios
+                  </>
+                )}
               </button>
             </div>
           </div>
@@ -110,16 +378,29 @@ export default function Profile() {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div>
                 <label className="block text-sm font-medium text-foreground mb-1.5">
-                  Nombre Completo
+                  Nombres
                 </label>
                 <div className="relative">
                   <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                   <input
                     type="text"
-                    defaultValue={userData.name}
+                    value={formData.nombres}
+                    onChange={(e) => setFormData(prev => ({ ...prev, nombres: e.target.value }))}
                     className="input-sena pl-10"
                   />
                 </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1.5">
+                  Apellidos
+                </label>
+                <input
+                  type="text"
+                  value={formData.apellidos}
+                  onChange={(e) => setFormData(prev => ({ ...prev, apellidos: e.target.value }))}
+                  className="input-sena"
+                />
               </div>
 
               <div>
@@ -128,7 +409,7 @@ export default function Profile() {
                 </label>
                 <input
                   type="text"
-                  defaultValue={userData.identification}
+                  value={profile?.numero_identificacion || ''}
                   className="input-sena"
                   disabled
                 />
@@ -142,8 +423,9 @@ export default function Profile() {
                   <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                   <input
                     type="email"
-                    defaultValue={userData.email}
+                    value={formData.email}
                     className="input-sena pl-10"
+                    disabled
                   />
                 </div>
               </div>
@@ -156,39 +438,24 @@ export default function Profile() {
                   <Phone className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                   <input
                     type="tel"
-                    defaultValue={userData.phone}
+                    value={formData.telefono}
+                    onChange={(e) => setFormData(prev => ({ ...prev, telefono: e.target.value }))}
                     className="input-sena pl-10"
+                    placeholder="+57 300 123 4567"
                   />
                 </div>
               </div>
 
               <div>
                 <label className="block text-sm font-medium text-foreground mb-1.5">
-                  Ubicación
+                  Rol
                 </label>
-                <div className="relative">
-                  <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                  <input
-                    type="text"
-                    defaultValue={userData.address}
-                    className="input-sena pl-10"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-foreground mb-1.5">
-                  Fecha de Ingreso
-                </label>
-                <div className="relative">
-                  <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                  <input
-                    type="text"
-                    defaultValue={userData.joinDate}
-                    className="input-sena pl-10"
-                    disabled
-                  />
-                </div>
+                <input
+                  type="text"
+                  value={role ? role.charAt(0).toUpperCase() + role.slice(1) : 'Usuario'}
+                  className="input-sena capitalize"
+                  disabled
+                />
               </div>
             </div>
           </div>
@@ -201,31 +468,13 @@ export default function Profile() {
             <div className="max-w-md space-y-4">
               <div>
                 <label className="block text-sm font-medium text-foreground mb-1.5">
-                  Contraseña Actual
-                </label>
-                <div className="relative">
-                  <input
-                    type={showCurrentPassword ? "text" : "password"}
-                    placeholder="Ingrese su contraseña actual"
-                    className="input-sena pr-10"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowCurrentPassword(!showCurrentPassword)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                  >
-                    {showCurrentPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  </button>
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-foreground mb-1.5">
                   Nueva Contraseña
                 </label>
                 <div className="relative">
                   <input
                     type={showNewPassword ? "text" : "password"}
+                    value={passwordForm.newPassword}
+                    onChange={(e) => setPasswordForm(prev => ({ ...prev, newPassword: e.target.value }))}
                     placeholder="Ingrese su nueva contraseña"
                     className="input-sena pr-10"
                   />
@@ -237,6 +486,7 @@ export default function Profile() {
                     {showNewPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                   </button>
                 </div>
+                <p className="text-xs text-muted-foreground mt-1">Mínimo 6 caracteres</p>
               </div>
 
               <div>
@@ -245,24 +495,48 @@ export default function Profile() {
                 </label>
                 <input
                   type="password"
+                  value={passwordForm.confirmPassword}
+                  onChange={(e) => setPasswordForm(prev => ({ ...prev, confirmPassword: e.target.value }))}
                   placeholder="Confirme su nueva contraseña"
                   className="input-sena"
                 />
               </div>
 
-              <button className="btn-sena mt-4">
-                Actualizar Contraseña
+              <button 
+                onClick={handleChangePassword}
+                disabled={changingPassword}
+                className="btn-sena mt-4 flex items-center gap-2"
+              >
+                {changingPassword ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Actualizando...
+                  </>
+                ) : (
+                  "Actualizar Contraseña"
+                )}
               </button>
             </div>
 
             <hr className="my-8 border-border" />
 
-            <h3 className="text-lg font-medium text-foreground mb-4">Sesiones Activas</h3>
+            <h3 className="text-lg font-medium text-foreground mb-4">Información de la Cuenta</h3>
             <div className="space-y-3">
               <div className="flex items-center justify-between p-4 bg-muted/30 rounded-lg">
                 <div>
-                  <p className="font-medium text-foreground">Este dispositivo</p>
-                  <p className="text-sm text-muted-foreground">Chrome en Windows • Bogotá, Colombia</p>
+                  <p className="font-medium text-foreground">Correo electrónico</p>
+                  <p className="text-sm text-muted-foreground">{user?.email}</p>
+                </div>
+              </div>
+              <div className="flex items-center justify-between p-4 bg-muted/30 rounded-lg">
+                <div>
+                  <p className="font-medium text-foreground">Último acceso</p>
+                  <p className="text-sm text-muted-foreground">
+                    {user?.last_sign_in_at 
+                      ? new Date(user.last_sign_in_at).toLocaleString('es-CO')
+                      : 'N/A'
+                    }
+                  </p>
                 </div>
                 <span className="badge-success">Activa ahora</span>
               </div>
